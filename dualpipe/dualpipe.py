@@ -341,7 +341,7 @@ class DualPipe(nn.Module):
             assert criterion is not None
 
         self._reset_states()
-
+        print(inputs, half_num_chunks, self.batch_dim)
         inputs = scatter(inputs, half_num_chunks, self.batch_dim)
         labels = scatter(labels, half_num_chunks, self.batch_dim)
         if self.is_first_rank:
