@@ -7,6 +7,14 @@ import torch.distributed as dist
 import dualpipe.comm as comm
 from dualpipe.utils import WeightGradStore, run_backward, scatter, gather
 
+import logging
+import sys
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(message)s",
+    stream=sys.stdout,
+)
 
 class DualPipe(nn.Module):
     def __init__(
@@ -341,7 +349,7 @@ class DualPipe(nn.Module):
             assert criterion is not None
 
         self._reset_states()
-        print(inputs, half_num_chunks, self.batch_dim, flush=True)
+        logging.debug(inputs, half_num_chunks, self.batch_dim)
         inputs = scatter(inputs, half_num_chunks, self.batch_dim)
         labels = scatter(labels, half_num_chunks, self.batch_dim)
         if self.is_first_rank:
