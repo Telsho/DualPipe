@@ -350,12 +350,20 @@ class DualPipe(nn.Module):
 
         self._reset_states()
         
-        def flatten_inputs(x):
-            if isinstance(x, tuple) and len(x) == 1:
-                return flatten_inputs(x[0])
-            return x
+        def flatten_all(x):
+            """Recursively flatten a nested list/tuple of items."""
+            if isinstance(x, (list, tuple)):
+                out = []
+                for item in x:
+                    out.extend(flatten_all(item))
+                return out
+            else:
+                return [x]
 
-        inputs = tuple(flatten_inputs(x) for x in inputs)
+        # Then, before calling scatter:
+        flat_inputs = flatten_all(inputs)
+        # Optionally, if you expect exactly one set of inputs per rank, you can convert to a tuple:
+        inputs = tuple(flat_inputs)
         inputs = scatter(inputs, half_num_chunks, self.batch_dim)
         labels = scatter(labels, half_num_chunks, self.batch_dim)
         if self.is_first_rank:
