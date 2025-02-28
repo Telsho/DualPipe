@@ -10,12 +10,6 @@ from dualpipe.utils import WeightGradStore, run_backward, scatter, gather
 import logging
 import sys
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s %(levelname)s %(message)s",
-    stream=sys.stdout,
-)
-
 class DualPipe(nn.Module):
     def __init__(
         self,
@@ -311,6 +305,7 @@ class DualPipe(nn.Module):
         Execute a training or inference step.
         """
         logger = logging.getLogger(__name__)
+        logger.propagate = True
         logger.info(f"Step start: rank {self.rank}/{self.num_ranks}, num_chunks={num_chunks}, return_outputs={return_outputs}")
         
         assert comm.TENSOR_SHAPES is not None and comm.TENSOR_DTYPE is not None, \
