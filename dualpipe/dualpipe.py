@@ -13,6 +13,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s %(levelname)s %(message)s",
     stream=sys.stdout,
+    force=True
 )
 
 class DualPipe(nn.Module):
