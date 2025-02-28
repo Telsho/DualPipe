@@ -335,8 +335,8 @@ class DualPipe(nn.Module):
         logger.debug("Resetting internal states")
         self._reset_states()
 
-        logger.debug(f"inputs: {inputs}, {half_num_chunks}, {self.batch_dim}")
-        
+        logger.debug(f"inputs in step: {inputs}, {half_num_chunks}, {self.batch_dim}")
+
         # Scatter inputs and labels into micro-batches
         inputs = scatter(inputs, half_num_chunks, self.batch_dim)
         labels = scatter(labels, half_num_chunks, self.batch_dim)
