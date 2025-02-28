@@ -308,28 +308,11 @@ class DualPipe(nn.Module):
         return_outputs: bool = False,
     ) -> Tuple[Optional[torch.Tensor], Optional[Union[torch.Tensor, Tuple[torch.Tensor]]]]:
         """
-        Execute a traning or inference step.
-
-        Arguments:
-            *inputs: Module inputs. Required only on the first/last ranks.
-            num_chunks: The number of micro-batches.
-            criterion: Loss function, invoked as ``criterion(*outputs, *labels)``. Required only on the first/last ranks.
-            labels: Labels of the loss function. Required only on the first/last ranks.
-                labels on the first rank corresponds to inputs on the last rank.
-                labels on the last rank corresponds to inputs on the first rank.
-            return_outputs: Whether to return outputs on the first/last ranks. Default: ``False``.
-
-        Returns: (loss, outputs)
-            loss: Loss for the batch.
-                loss on the first rank corresponds to inputs on the last rank.
-                loss on the last rank corresponds to inputs on the first rank.
-                Otherwise: ``None``.
-            outputs: Returned only if ``return_outputs=True``.
-                outputs on the first rank corresponds to inputs on the last rank.
-                outputs on the last rank corresponds to inputs on the first rank.
-                Otherwise: ``None``.
-
+        Execute a training or inference step.
         """
+        logger = logging.getLogger(__name__)
+        logger.info(f"Step start: rank {self.rank}/{self.num_ranks}, num_chunks={num_chunks}, return_outputs={return_outputs}")
+        
         assert comm.TENSOR_SHAPES is not None and comm.TENSOR_DTYPE is not None, \
             "You need to call set_p2p_tensor_shapes and set_p2p_tensor_dtype before doing a step."
         self.forward_only = not torch.is_grad_enabled()
@@ -337,7 +320,7 @@ class DualPipe(nn.Module):
 
         rank = self.rank
         num_ranks = self.num_ranks
-        assert num_ranks % 2 == 0
+        assert num_ranks % 2 == 0, "Number of ranks must be even"
         assert num_chunks > 0 and num_chunks % 2 == 0 and num_chunks >= num_ranks * 2, f"{num_chunks=}, {num_ranks=}"
         num_half_ranks = num_ranks // 2
         half_rank = min(rank, num_ranks - 1 - rank)
@@ -346,24 +329,13 @@ class DualPipe(nn.Module):
         self.half_rank = half_rank
 
         if not self.forward_only and (self.is_first_rank or self.is_last_rank):
-            assert criterion is not None
-
-        self._reset_states()
+            assert criterion is not None, "Criterion must be provided in training mode on first/last rank"
         
-        def flatten_all(x):
-            """Recursively flatten a nested list/tuple of items."""
-            if isinstance(x, (list, tuple)):
-                out = []
-                for item in x:
-                    out.extend(flatten_all(item))
-                return out
-            else:
-                return [x]
+        logger.debug("Resetting internal states")
+        self._reset_states()
 
-        # Then, before calling scatter:
-        flat_inputs = flatten_all(inputs)
-        # Optionally, if you expect exactly one set of inputs per rank, you can convert to a tuple:
-        inputs = tuple(flat_inputs)
+        logger.debug("inputs: ", inputs, half_num_chunks, self.batch_dim)
+        # Scatter inputs and labels into micro-batches
         inputs = scatter(inputs, half_num_chunks, self.batch_dim)
         labels = scatter(labels, half_num_chunks, self.batch_dim)
         if self.is_first_rank:
@@ -373,19 +345,21 @@ class DualPipe(nn.Module):
             self.input_chunks = ([], inputs)
             self.labels = (labels, [])
         self.criterion = criterion
-
-        # For the fisrt half of the ranks: phase 0 means forward direction, phase 1 means reverse direction.
-        # For the second half of the ranks: phase 0 means reverse direction, phase 1 means forward direction.
+        logger.info(f"Inputs and labels scattered into {half_num_chunks} chunks per half.")
 
         # Step 1: nF0
         step_1 = (num_half_ranks - half_rank - 1) * 2
+        logger.info(f"Step 1: Executing nF0 for {step_1} iterations.")
         for i in range(step_1):
+            logger.debug(f"Step 1, iteration {i+1}/{step_1}")
             self._forward_chunk(0)
 
         # Step 2: nF0F1
         step_2 = half_rank + 1
+        logger.info(f"Step 2: Executing nF0F1 for {step_2} iterations.")
         self._recv_forward(0)
         for i in range(step_2):
+            logger.debug(f"Step 2, iteration {i+1}/{step_2}")
             self._forward_chunk(0, recv=False, send=self.is_middle_rank)
             self._recv_forward(0)
             self._forward_chunk(1, send=(not self.is_middle_rank) or (i < step_2 - 1))
@@ -394,7 +368,9 @@ class DualPipe(nn.Module):
 
         # Step 3: nB1W1F1 (Use zero bubble)
         step_3 = num_half_ranks - half_rank - 1
+        logger.info(f"Step 3: Executing nB1W1F1 for {step_3} iterations (using zero bubble).")
         for i in range(step_3):
+            logger.debug(f"Step 3, iteration {i+1}/{step_3}")
             self._backward_chunk(1, enable_zb=True)
             self._recv_forward(1)
             self._weight_chunk()
@@ -402,10 +378,12 @@ class DualPipe(nn.Module):
 
         # Step 4 (Main step): nF0B1F1B0
         step_4 = half_num_chunks - num_ranks + half_rank + 1
+        logger.info(f"Step 4: Executing main step nF0B1F1B0 for {step_4} iterations.")
         for i in range(step_4):
+            logger.debug(f"Step 4, iteration {i+1}/{step_4}")
             if i == 0:
                 if self.is_middle_rank:
-                    # NOTE: We don't overlap these two chunks to further reduce bubble size.
+                    logger.debug("Step 4: Middle rank branch, non-overlapped chunks.")
                     self._forward_chunk(0, recv=False, send=False)
                     self._send_forward(1)
                     self._backward_chunk(1, send=False)
@@ -419,44 +397,59 @@ class DualPipe(nn.Module):
 
         # Step 5: nB1F1B0
         step_5 = num_half_ranks - half_rank - 1
+        logger.info(f"Step 5: Executing nB1F1B0 for {step_5} iterations.")
         for i in range(step_5):
+            logger.debug(f"Step 5, iteration {i+1}/{step_5}")
             self._backward_chunk(1)
             self._forward_backward_chunk(1, 0)
 
         # Step 6: nB1B0 (The second half of the chunks use zero bubble)
         step_6 = half_rank + 1
         enable_zb = False
+        logger.info(f"Step 6: Executing nB1B0 for {step_6} iterations (zero bubble switch control).")
         for i in range(step_6):
+            logger.debug(f"Step 6, iteration {i+1}/{step_6} (enable_zb={enable_zb})")
             if i == step_6 // 2 and half_rank % 2 == 1:
                 enable_zb = True
+                logger.debug("Step 6: Enabling zero bubble (condition 1).")
             self._backward_chunk(1, enable_zb=enable_zb)
             if i == step_6 // 2 and half_rank % 2 == 0:
                 enable_zb = True
+                logger.debug("Step 6: Enabling zero bubble (condition 2).")
             self._backward_chunk(0, enable_zb=enable_zb)
 
         # Step 7: nWB0 (Use zero bubble)
         step_7 = num_half_ranks - half_rank - 1
+        logger.info(f"Step 7: Executing nWB0 for {step_7} iterations (weight chunking with zero bubble).")
         for i in range(step_7):
+            logger.debug(f"Step 7, iteration {i+1}/{step_7}")
             self._weight_chunk()
             self._backward_chunk(0, enable_zb=True)
 
         # Step 8: nW
         step_8 = half_rank + 1
+        logger.info(f"Step 8: Executing nW for {step_8} iterations (final weight update).")
         for i in range(step_8):
+            logger.debug(f"Step 8, iteration {i+1}/{step_8}")
             self._weight_chunk()
-        assert WeightGradStore.funcs_queue.empty()
+
+        assert WeightGradStore.funcs_queue.empty(), "WeightGradStore queue should be empty after weight updates."
 
         self._commit_and_wait_comm()
+        logger.info("Communication committed and tensors freed.")
 
         loss, outputs = None, None
         if self.is_first_rank or self.is_last_rank:
             if criterion is not None:
                 loss = torch.stack(self.loss_chunks)
+                logger.info(f"Loss computed with {len(self.loss_chunks)} chunks.")
             if return_outputs:
                 outputs = gather(self.output_chunks[self.is_first_rank], self.batch_dim)
                 if len(outputs) == 1:
                     outputs = outputs[0]
-
+                logger.info("Outputs gathered.")
+        
         self._reset_states()
+        logger.info("Step complete, internal states reset.")
 
         return loss, outputs
