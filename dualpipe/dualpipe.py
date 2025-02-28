@@ -9,6 +9,11 @@ from dualpipe.utils import WeightGradStore, run_backward, scatter, gather
 
 import logging
 import sys
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(message)s",
+    stream=sys.stdout,
+)
 
 class DualPipe(nn.Module):
     def __init__(
