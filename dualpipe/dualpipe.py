@@ -50,7 +50,8 @@ class DualPipe(nn.Module):
         self.is_first_rank = self.rank == 0
         self.is_last_rank = self.rank == self.num_ranks - 1
         self.is_in_second_half = self.rank >= self.num_ranks // 2
-        self.is_middle_rank = (self.rank == self.num_ranks // 2 - 1) or (self.rank == self.num_ranks // 2)
+        # Only mark middle ranks when we have more than 2 total ranks
+        self.is_middle_rank = self.num_ranks > 2 and ((self.rank == self.num_ranks // 2 - 1) or (self.rank == self.num_ranks // 2))
 
     def _reset_states(self) -> None:
         WeightGradStore.clear()
