@@ -213,27 +213,30 @@ class DualPipe(nn.Module):
             self._send_backward(phase)
             
     def _forward_backward_chunk(self, phase0: int, phase1: int, recv0: bool = True) -> None:
-        print(f"Rank {self.rank} - Starting _forward_backward_chunk phases {phase0}, {phase1} at {time.time()}")
+        logger = logging.getLogger(__name__)
+        logger.propagate = True
+        
+        logger.debug(f"Rank {self.rank} - Starting _forward_backward_chunk phases {phase0}, {phase1} at {time.time()}")
         if recv0:
-            print(f"Rank {self.rank} - Receiving forward phase {phase0} at {time.time()}")
+            logger.debug(f"Rank {self.rank} - Receiving forward phase {phase0} at {time.time()}")
             self._recv_forward(phase0)
         
-        print(f"Rank {self.rank} - Receiving backward phase {phase1} at {time.time()}")
+        logger.debug(f"Rank {self.rank} - Receiving backward phase {phase1} at {time.time()}")
         self._recv_backward(phase1)
         
-        print(f"Rank {self.rank} - Committing and waiting for comm at {time.time()}")
+        logger.debug(f"Rank {self.rank} - Committing and waiting for comm at {time.time()}")
         self._commit_and_wait_comm()
 
-        print(f"Rank {self.rank} - Computing forward_backward at {time.time()}")
+        logger.debug(f"Rank {self.rank} - Computing forward_backward at {time.time()}")
         self._forward_backward_compute_chunk(phase0, phase1)
 
-        print(f"Rank {self.rank} - Sending forward phase {phase0} at {time.time()}")
+        logger.debug(f"Rank {self.rank} - Sending forward phase {phase0} at {time.time()}")
         self._send_forward(phase0)
         
-        print(f"Rank {self.rank} - Sending backward phase {phase1} at {time.time()}")
+        logger.debug(f"Rank {self.rank} - Sending backward phase {phase1} at {time.time()}")
         self._send_backward(phase1)
         
-        print(f"Rank {self.rank} - Completed _forward_backward_chunk at {time.time()}")
+        logger.debug(f"Rank {self.rank} - Completed _forward_backward_chunk at {time.time()}")
 
     def _weight_chunk(self) -> None:
         if self.forward_only:
