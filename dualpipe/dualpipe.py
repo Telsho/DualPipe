@@ -193,14 +193,44 @@ class DualPipe(nn.Module):
         self.input_grad_chunks[phase1].append(input_grads1)
 
     def _forward_chunk(self, phase: int, recv: bool = True, send: bool = True) -> None:
+        logger = logging.getLogger(__name__)
+        start_time = time.time()
+        logger.debug(f"Rank {self.rank} - _forward_chunk phase={phase}, recv={recv}, send={send} starting at {start_time}")
+        
         if recv:
+            logger.debug(f"Rank {self.rank} - _forward_chunk phase={phase}: Calling self._recv_forward({phase})")
             self._recv_forward(phase)
+            
+        logger.debug(f"Rank {self.rank} - _forward_chunk phase={phase}: Calling self._commit_and_wait_comm()")
         self._commit_and_wait_comm()
-
+        
+        logger.debug(f"Rank {self.rank} - _forward_chunk phase={phase}: Calling self._forward_compute_chunk({phase})")
         self._forward_compute_chunk(phase)
-
+        
         if send:
+            logger.debug(f"Rank {self.rank} - _forward_chunk phase={phase}: Calling self._send_forward({phase})")
             self._send_forward(phase)
+            
+        logger.debug(f"Rank {self.rank} - _forward_chunk phase={phase} completed at {time.time()}, took {time.time()-start_time:.3f}s")
+
+    def _recv_forward(self, phase: int) -> None:
+        logger = logging.getLogger(__name__)
+        start_time = time.time()
+        logger.debug(f"Rank {self.rank} - _recv_forward phase={phase} starting at {start_time}")
+        
+        phase ^= self.is_in_second_half
+        is_first_stage = (self.is_first_rank and phase == 0) or (self.is_last_rank and phase == 1)
+        if is_first_stage:
+            logger.debug(f"Rank {self.rank} - _recv_forward phase={phase}: is_first_stage=True, returning early")
+            return
+
+        self.current_recv_f_chunk_id[phase] += 1
+        prev_or_next = self.prev_rank if phase == 0 else self.next_rank
+        logger.debug(f"Rank {self.rank} - _recv_forward phase={phase}: Calling comm.append_irecv with prev_or_next={prev_or_next}")
+        tensors = comm.append_irecv(self.comm_ops, prev_or_next, self.group)
+        self.input_chunks[phase].append(tensors)
+        
+        logger.debug(f"Rank {self.rank} - _recv_forward phase={phase} completed at {time.time()}, took {time.time()-start_time:.3f}s")
 
     def _backward_chunk(self, phase: int, enable_zb: bool = False, recv: bool = True, send: bool = True) -> None:
         if recv:
@@ -215,7 +245,7 @@ class DualPipe(nn.Module):
     def _forward_backward_chunk(self, phase0: int, phase1: int, recv0: bool = True) -> None:
         logger = logging.getLogger(__name__)
         logger.propagate = True
-        
+
         logger.debug(f"Rank {self.rank} - Starting _forward_backward_chunk phases {phase0}, {phase1} at {time.time()}")
         if recv0:
             logger.debug(f"Rank {self.rank} - Receiving forward phase {phase0} at {time.time()}")
@@ -252,16 +282,6 @@ class DualPipe(nn.Module):
             assert tensor._base is None, f"pipeline stage should not return view tensors {dist.get_rank(), tensor.shape}"
             tensor.data = torch.Tensor()
         self.to_free = []
-
-    def _recv_forward(self, phase: int) -> None:
-        phase ^= self.is_in_second_half
-        is_first_stage = (self.is_first_rank and phase == 0) or (self.is_last_rank and phase == 1)
-        if is_first_stage:
-            return
-
-        self.current_recv_f_chunk_id[phase] += 1
-        tensors = comm.append_irecv(self.comm_ops, self.prev_rank if phase == 0 else self.next_rank, self.group)
-        self.input_chunks[phase].append(tensors)
 
     def _send_forward(self, phase: int) -> None:
         phase ^= self.is_in_second_half
@@ -374,16 +394,36 @@ class DualPipe(nn.Module):
             self._forward_chunk(0)
 
         # Step 2: nF0F1
+        # In the step method, add these detailed logs for Step 2:
+        # Step 2: nF0F1
         step_2 = half_rank + 1
-        logger.info(f"Step 2: Executing nF0F1 for {step_2} iterations.")
+        logger.info(f"Rank {self.rank} - Step 2: Executing nF0F1 for {step_2} iterations.")
+        logger.info(f"Rank {self.rank} - Step 2: Starting self._recv_forward(0) at {time.time()}")
         self._recv_forward(0)
+        logger.info(f"Rank {self.rank} - Step 2: Completed self._recv_forward(0) at {time.time()}")
+
         for i in range(step_2):
-            logger.debug(f"Step 2, iteration {i+1}/{step_2}")
+            start_time = time.time()
+            logger.info(f"Rank {self.rank} - Step 2, iteration {i+1}/{step_2} starting at {start_time}")
+            
+            logger.info(f"Rank {self.rank} - Step 2: Starting self._forward_chunk(0, recv=False, send={self.is_middle_rank}) at {time.time()}")
             self._forward_chunk(0, recv=False, send=self.is_middle_rank)
+            logger.info(f"Rank {self.rank} - Step 2: Completed self._forward_chunk(0) at {time.time()}")
+            
+            logger.info(f"Rank {self.rank} - Step 2: Starting self._recv_forward(0) at {time.time()}")
             self._recv_forward(0)
+            logger.info(f"Rank {self.rank} - Step 2: Completed self._recv_forward(0) at {time.time()}")
+            
+            logger.info(f"Rank {self.rank} - Step 2: Starting self._forward_chunk(1, send={(not self.is_middle_rank) or (i < step_2 - 1)}) at {time.time()}")
             self._forward_chunk(1, send=(not self.is_middle_rank) or (i < step_2 - 1))
+            logger.info(f"Rank {self.rank} - Step 2: Completed self._forward_chunk(1) at {time.time()}")
+            
             if not self.is_middle_rank:
+                logger.info(f"Rank {self.rank} - Step 2: Starting self._send_forward(0) at {time.time()}")
                 self._send_forward(0)
+                logger.info(f"Rank {self.rank} - Step 2: Completed self._send_forward(0) at {time.time()}")
+            
+            logger.info(f"Rank {self.rank} - Step 2, iteration {i+1}/{step_2} completed at {time.time()}, took {time.time()-start_time:.3f}s")
 
         # Step 3: nB1W1F1 (Use zero bubble)
         step_3 = num_half_ranks - half_rank - 1
