@@ -61,12 +61,10 @@ def cat_tensor(x, dim):
 
 def scatter(inputs, chunks, dim):
     assert isinstance(inputs, (torch.Tensor, tuple, list))
-    logging.debug(f"inside scatter : {inputs}")
     
     if isinstance(inputs, torch.Tensor):
         inputs = (inputs,)
     
-    logging.debug(f"inside scatter 2: {inputs}")
     assert all(x is None or isinstance(x, torch.Tensor) for x in inputs)
     inputs = [chunk_tensor(x, chunks, dim) for x in inputs]
     microbatches = [microbatch for microbatch in zip(*inputs)]
