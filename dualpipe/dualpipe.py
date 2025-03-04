@@ -90,7 +90,8 @@ class DualPipe(nn.Module):
             self.input_chunks[phase][chunk_id] = None
 
         is_last_stage = (self.is_first_rank and phase == 1) or (self.is_last_rank and phase == 0)
-        logger.debug(f"Rank {self.rank} - is_last_stage={is_last_stage}")
+        logger.debug(f"Rank {self.rank} - _forward_compute_chunk: phase={phase}, is_first_rank={self.is_first_rank}, is_last_rank={self.is_last_rank}, is_last_stage={is_last_stage}")
+    
 
         logger.debug(f"Rank {self.rank} - About to call module[{phase}] at {time.time()}")
         try:
