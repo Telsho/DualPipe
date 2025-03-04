@@ -75,16 +75,32 @@ class DualPipe(nn.Module):
         self.to_free: List[torch.Tensor] = []
 
     def _forward_compute_chunk(self, phase: int) -> None:
+        logger = logging.getLogger(__name__)
+        start_time = time.time()
+        logger.debug(f"Rank {self.rank} - _forward_compute_chunk phase={phase} starting at {start_time}")
+        
         phase ^= self.is_in_second_half
         chunk_id = self.current_f_chunk_id[phase]
         self.current_f_chunk_id[phase] += 1
+        
+        logger.debug(f"Rank {self.rank} - Getting inputs from chunk_id={chunk_id}")
         inputs = self.input_chunks[phase][chunk_id]
+        
         if self.forward_only:
             self.input_chunks[phase][chunk_id] = None
 
         is_last_stage = (self.is_first_rank and phase == 1) or (self.is_last_rank and phase == 0)
+        logger.debug(f"Rank {self.rank} - is_last_stage={is_last_stage}")
 
-        outputs = self.module[phase](*inputs)
+        logger.debug(f"Rank {self.rank} - About to call module[{phase}] at {time.time()}")
+        try:
+            outputs = self.module[phase](*inputs)
+            logger.debug(f"Rank {self.rank} - Module call completed at {time.time()}")
+        except Exception as e:
+            logger.error(f"Rank {self.rank} - Exception in module call: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
         outputs = [outputs] if isinstance(outputs, torch.Tensor) else outputs
         if is_last_stage and self.criterion is not None:
             labels = self.labels[phase][chunk_id]
